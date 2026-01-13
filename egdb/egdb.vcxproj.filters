@@ -1,0 +1,192 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="builddb">
+      <UniqueIdentifier>{fa1c45ac-e92c-48e3-b5f7-71c5008588f8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="egdb">
+      <UniqueIdentifier>{4292a664-3ed7-45b3-8157-6dc81384b90f}</UniqueIdentifier>
+      <Extensions>cpp;c;cxx;rc;def;r;odl;idl;hpj;bat</Extensions>
+    </Filter>
+    <Filter Include="engine">
+      <UniqueIdentifier>{2066fd0d-63db-41f7-a364-b8ee482dcff0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Re-pair">
+      <UniqueIdentifier>{98af8da0-1550-4f22-9a1a-eaad92bc0c77}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Huffman">
+      <UniqueIdentifier>{d5baa4b4-db51-4f85-a056-cbff58e418e7}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="crc.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_cake.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_chinook.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_identify.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_mtc_slice32.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_open.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_slice32_4ki.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="slice.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_slice32_tunstall.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="bitboard_convert.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="..\builddb\bicoef.c">
+      <Filter>builddb</Filter>
+    </ClCompile>
+    <ClCompile Include="..\engine\bitcount.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
+    <ClCompile Include="..\builddb\indexing.cpp">
+      <Filter>builddb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_common.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_dtw.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Re-pair\utils.cpp">
+      <Filter>Re-pair</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Huffman\bitbuf.cpp">
+      <Filter>Huffman</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Huffman\huffman.cpp">
+      <Filter>Huffman</Filter>
+    </ClCompile>
+    <ClCompile Include="..\engine\reverse.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
+    <ClCompile Include="..\engine\pext.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="..\engine\instruction_set.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_slice32_tunstall_12pc.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="tun_v2_decompress.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Re-pair\fnv32.cpp">
+      <Filter>Re-pair</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_wld_v3.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="..\builddb\rle_tables.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+    <ClCompile Include="egdb_wld_v2.cpp">
+      <Filter>egdb</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="slice.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="bitboard_convert.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="crc.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="egdb.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="egdb_chinook.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="egdb_common.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="egdb_internal.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="..\engine\SpinLock.h">
+      <Filter>engine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\builddb\bicoef.h">
+      <Filter>builddb</Filter>
+    </ClInclude>
+    <ClInclude Include="..\engine\bitcount.h">
+      <Filter>engine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\builddb\indexing.h">
+      <Filter>builddb</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Re-pair\repair.h">
+      <Filter>Re-pair</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Huffman\bitbuf.h">
+      <Filter>Huffman</Filter>
+    </ClInclude>
+    <ClInclude Include="..\Huffman\huffman.h">
+      <Filter>Huffman</Filter>
+    </ClInclude>
+    <ClInclude Include="..\engine\timer.h">
+      <Filter>engine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\engine\reverse.h">
+      <Filter>engine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\engine\pext.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="tun_v2_decompress.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="..\builddb\tunstall_decompress.h">
+      <Filter>builddb</Filter>
+    </ClInclude>
+    <ClInclude Include="cache_ref_hashtable.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="wld_v2_crcs.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="dtw_crcs.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="wld_v1_crcs.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="mtc_crcs.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="wld_v3_crcs.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+    <ClInclude Include="egdb_tunstall.h">
+      <Filter>egdb</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="tunstall_decompress_v2.txt">
+      <Filter>egdb</Filter>
+    </Text>
+  </ItemGroup>
+</Project>
