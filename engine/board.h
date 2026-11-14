@@ -7,8 +7,8 @@
 #define WHITE 1
 #define OTHER_COLOR(color) ((color) ^ 1)
 
-#define MAXMOVES 30
-#define UNDEFINED_MOVE 31
+#define MAXMOVES 64		/* more than any position with at most 12 pieces per side (8 open kings already have 32 moves) */
+#define UNDEFINED_MOVE 31	/* "no move" in 5-bit move fields (opening book); not tied to MAXMOVES */
 #define MAXPIECES_JUMPED 12
 #define NUMSQUARES 32
 #define MAXSQUARE NUMSQUARES

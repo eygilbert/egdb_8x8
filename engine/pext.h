@@ -36,5 +36,7 @@ inline void force_pext(bool state)
 
 
 bool init_pext(void);
+int cpu_family(uint32_t cpuid1_eax);
+bool pext_is_fast(const std::string &vendor, int family);
 uint64_t pdep_u64_emul(uint64_t val, uint64_t mask);
 

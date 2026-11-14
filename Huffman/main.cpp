@@ -109,7 +109,7 @@ void verify_block_api(Huffman &huff, std::vector<Huffman::Value> &input)
 	for (start_index = 0; start_index < input.size(); ) {
 		next_start_index = huff.write_compressed_block(input, start_index, block);
 		uncompress_block(block, next_start_index - start_index, uncompr, lengthtable, codelengths);
-		for (int i = 0; i < uncompr.size(); ++i) {
+		for (size_t i = 0; i < uncompr.size(); ++i) {
 			if (uncompr[i] != input[start_index + i]) {
 				printf("Verify error at input[i + start_index]: expected %d, got %d\n", input[start_index + i], uncompr[i]);
 			}

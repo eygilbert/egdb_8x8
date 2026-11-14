@@ -2,7 +2,7 @@
 
 #include "egdb_internal.h"
 
-static DBCRC wld_v1_english_crcs[] = {
+static const DBCRC wld_v1_english_crcs[] = {
 	{"db2.cpr", 0x9daef5a7},
 	{"db2.idx", 0x75d75851},
 	{"db3.cpr", 0x62145d04},
@@ -197,7 +197,7 @@ static DBCRC wld_v1_english_crcs[] = {
 	{"db10-5050.idx", 0x52bbb51e},
 };
 
-static DBCRC wld_v1_italian_crcs[] = {
+static const DBCRC wld_v1_italian_crcs[] = {
 	{"db2.cpr", 0x07887dae},
 	{"db2.idx", 0xcf78e282},
 	{"db3.cpr", 0x4acbf7c4},

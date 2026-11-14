@@ -3,12 +3,20 @@
 #include <stdint.h>
 #include <windows.h>
 #include <algorithm>
+#include <new>
+#include <exception>
 #include "project.h"
 #include "egdb.h"
 
 #define NUMBEROFCOLORS 2
 #define UNDEFINED_BLOCK_ID -1
 #define MAXFILENAME MAX_PATH
+
+/* The longest database directory accepted by egdb_open() and egdb_identify().
+ * The drivers build filenames in MAXFILENAME buffers as directory + separator +
+ * file name (at most 19 chars) + '.' + extension, so leave room for those.
+ */
+#define MAX_DB_DIRECTORY_LEN (MAXFILENAME - 64)
 #define MALLOC_ALIGNSIZE 16
 #define IDX_READBUFSIZE 20000
 
@@ -31,6 +39,7 @@ typedef union {
 } I64_HIGH_LOW;
 
 int read_file(HANDLE fp, unsigned char *buf, SIZE_T size, int pagesize);
+int read_cache_block(HANDLE fp, int64_t filepos, unsigned char *buf, int cache_blocksize, void (*log_msg_fn)(const char *));
 bool is_wld(EGDB_TYPE type);
 bool is_dtw(EGDB_TYPE type);
 bool is_mtc(EGDB_TYPE type);
@@ -96,7 +105,7 @@ inline int find_block(int first, int last, T_index block_starts[], T_index targe
 
 
 template <class DBCRC_T> 
-DBCRC_T *find_file_crc(char const *name, DBCRC_T *table, int size)
+const DBCRC_T *find_file_crc(char const *name, const DBCRC_T *table, int size)
 {
 	int i;
 
@@ -108,23 +117,15 @@ DBCRC_T *find_file_crc(char const *name, DBCRC_T *table, int size)
 }
 
 
+/*
+ * Read the block given by ccb->blocknum from ccb's file into ccb->data.
+ * Return 1 on success, 0 on error.
+ */
 template <class CCB_T, class DBHANDLE_T>
-void read_block_from_file(DBHANDLE_T *hdat, CCB_T *ccb, int cache_blocksize)
+int read_block_from_file(DBHANDLE_T *hdat, CCB_T *ccb, int cache_blocksize)
 {
-	I64_HIGH_LOW filepos;
-	DWORD bytes_read;
-	BOOL stat;
-
-	filepos.word64 = (int64_t)ccb->blocknum * cache_blocksize;
-
-	/* Seek the start position. */
-	if (SetFilePointer(ccb->subdb->file->fp, filepos.words32.low32, (long *)&filepos.words32.high32, FILE_BEGIN) == -1) {
-		(*hdat->log_msg_fn)("\nseek failed\n");
-		return;
-	}
-	stat = ReadFile(ccb->subdb->file->fp, ccb->data, cache_blocksize, &bytes_read, NULL);
-	if (!stat)
-		(*hdat->log_msg_fn)("\nError reading file\n");
+	return(read_cache_block(ccb->subdb->file->fp, (int64_t)ccb->blocknum * cache_blocksize,
+					ccb->data, cache_blocksize, hdat->log_msg_fn));
 }
 
 
@@ -133,6 +134,7 @@ void read_block_from_file(DBHANDLE_T *hdat, CCB_T *ccb, int cache_blocksize)
  * Get the least recently used cache
  * block and load it into that.
  * Update the LRU list to make this block the most recently used.
+ * Return NULL if the block cannot be read. In that case the block is not cached.
  */
 template <class CCB_T, class DBHANDLE_T, class CPRSUBDB_T>
 CCB_T *load_blocknum(DBHANDLE_T *hdat, CPRSUBDB_T *subdb, int blocknum, int cache_blocksize)
@@ -153,13 +155,20 @@ CCB_T *load_blocknum(DBHANDLE_T *hdat, CPRSUBDB_T *subdb, int blocknum, int cach
 		ccbp->subdb->file->cache_bufferi[old_blocknum] = UNDEFINED_BLOCK_ID;
 	}
 
-	/* The ccbs_top block is now free for use. */
-	subdb->file->cache_bufferi[blocknum] = hdat->ccbs_top;
+	/* The ccbs_top block is now free for use.
+	 * Read this block from disk into it.
+	 */
 	ccbp->subdb = subdb;
 	ccbp->blocknum = blocknum;
+	if (!read_block_from_file(hdat, ccbp, cache_blocksize)) {
 
-	/* Read this block from disk into ccbs_top's ccb. */
-	read_block_from_file(hdat, hdat->ccbs + hdat->ccbs_top, cache_blocksize);
+		/* Leave this ccb unused. It stays at the top of the lru list, so the next load reuses it. */
+		ccbp->blocknum = UNDEFINED_BLOCK_ID;
+		return(NULL);
+	}
+
+	/* The read succeeded, so now it is safe to map the block to this ccb. */
+	subdb->file->cache_bufferi[blocknum] = hdat->ccbs_top;
 
 	assign_subindices(hdat, subdb, ccbp);
 
@@ -169,23 +178,15 @@ CCB_T *load_blocknum(DBHANDLE_T *hdat, CPRSUBDB_T *subdb, int blocknum, int cach
 }
 
 
+/*
+ * Read the block given by ccb->blocknum from ccb's file into ccb->data.
+ * Return 1 on success, 0 on error.
+ */
 template <class CCB_T, class DBHANDLE_T>
-void read_block_from_file_v2(DBHANDLE_T *hdat, CCB_T *ccb, int cache_blocksize)
+int read_block_from_file_v2(DBHANDLE_T *hdat, CCB_T *ccb, int cache_blocksize)
 {
-	I64_HIGH_LOW filepos;
-	DWORD bytes_read;
-	BOOL stat;
-
-	filepos.word64 = (int64_t)ccb->blocknum * cache_blocksize;
-
-	/* Seek the start position. */
-	if (SetFilePointer(ccb->dbfile->fp, filepos.words32.low32, (long *)&filepos.words32.high32, FILE_BEGIN) == -1) {
-		(*hdat->log_msg_fn)("\nseek failed\n");
-		return;
-	}
-	stat = ReadFile(ccb->dbfile->fp, ccb->data, cache_blocksize, &bytes_read, NULL);
-	if (!stat)
-		(*hdat->log_msg_fn)("\nError reading file\n");
+	return(read_cache_block(ccb->dbfile->fp, (int64_t)ccb->blocknum * cache_blocksize,
+					ccb->data, cache_blocksize, hdat->log_msg_fn));
 }
 
 
@@ -194,6 +195,7 @@ void read_block_from_file_v2(DBHANDLE_T *hdat, CCB_T *ccb, int cache_blocksize)
  * Get the least recently used cache
  * block and load it into that.
  * Update the LRU list to make this block the most recently used.
+ * Return NULL if the block cannot be read. In that case the block is not cached.
  */
 template <class CCB_T, class DBHANDLE_T, class DBFILE_T>
 CCB_T *load_blocknum_v2(DBHANDLE_T *hdat, DBFILE_T *db, int blocknum, int cache_blocksize)
@@ -214,13 +216,20 @@ CCB_T *load_blocknum_v2(DBHANDLE_T *hdat, DBFILE_T *db, int blocknum, int cache_
 		ccbp->dbfile->cache_bufferi[old_blocknum] = UNDEFINED_BLOCK_ID;
 	}
 
-	/* The ccbs_top block is now free for use. */
-	db->cache_bufferi[blocknum] = hdat->ccbs_top;
+	/* The ccbs_top block is now free for use.
+	 * Read this block from disk into it.
+	 */
 	ccbp->dbfile = db;
 	ccbp->blocknum = blocknum;
+	if (!read_block_from_file_v2(hdat, ccbp, cache_blocksize)) {
 
-	/* Read this block from disk into ccbs_top's ccb. */
-	read_block_from_file_v2(hdat, hdat->ccbs + hdat->ccbs_top, cache_blocksize);
+		/* Leave this ccb unused. It stays at the top of the lru list, so the next load reuses it. */
+		ccbp->blocknum = UNDEFINED_BLOCK_ID;
+		return(NULL);
+	}
+
+	/* The read succeeded, so now it is safe to map the block to this ccb. */
+	db->cache_bufferi[blocknum] = hdat->ccbs_top;
 
 	/* Fix linked list to point to the next oldest entry */
 	hdat->ccbs_top = hdat->ccbs[hdat->ccbs_top].next;
@@ -315,6 +324,13 @@ inline unsigned long get_page_size(void)
 }
 
 
+inline bool get_nrecords(int64_t nbytes, size_t recordsize, size_t &nrecords)
+{
+	nrecords = (size_t)(nbytes / recordsize);
+	return (nrecords * recordsize != nbytes);
+}
+
+
 template <class DBP_T>
 class dbaccess {
 private:
@@ -398,18 +414,39 @@ class autoload_order_list_builder {
 		return(pri);
 	}
 
+	/* Sort key for a file. Files that hold all the slices of one piece count
+	 * ("dbN") come first, ordered by pieces. Single slice files ("dbN-bmbkwmwk")
+	 * come next, ordered by priority. Files whose names don't parse go last.
+	 * Using one key for every pair keeps this a valid ordering for std::sort.
+	 */
+	static void sort_key(const DBFILE_T *f, int &group, double &value)
+	{
+		Pieces pieces = {false, 0, 0, 0, 0, 0};
+
+		if (get_pieces(f->name, pieces)) {
+			group = 2;
+			value = f->pieces;
+		}
+		else if (pieces.all_npiece_slices_this_file) {
+			group = 0;
+			value = f->pieces;
+		}
+		else {
+			group = 1;
+			value = priority(pieces);
+		}
+	}
+
 	static bool compare(const DBFILE_T *f1, const DBFILE_T *f2)
 	{
-		double priority1, priority2;
-		Pieces pieces1, pieces2;
+		int group1, group2;
+		double value1, value2;
 
-		get_pieces(f1->name, pieces1);
-		get_pieces(f2->name, pieces2);
-		if (pieces1.all_npiece_slices_this_file || pieces2.all_npiece_slices_this_file)
-			return(f1->pieces < f2->pieces);
-		priority1 = priority(pieces1);
-		priority2 = priority(pieces2);
-		return(priority1 < priority2);
+		sort_key(f1, group1, value1);
+		sort_key(f2, group2, value2);
+		if (group1 != group2)
+			return(group1 < group2);
+		return(value1 < value2);
 	}
 
 public:
@@ -441,10 +478,16 @@ struct adjustable_array {
 	T *reserve(int size)
 	{
 		if (size > maxsize) {
+			T *newdata;
+
+			/* On failure keep the old block and maxsize, so data stays valid. */
 			if (data == nullptr)
-				data = (T *)malloc(size * sizeof(T));
+				newdata = (T *)malloc(size * sizeof(T));
 			else
-				data = (T *)realloc(data, size * sizeof(T));
+				newdata = (T *)realloc(data, size * sizeof(T));
+			if (newdata == nullptr)
+				return(nullptr);
+			data = newdata;
 			maxsize = size;
 		}
 		return(data);
@@ -463,9 +506,15 @@ struct adjustable_array {
 
 	T *shrink_to_fit(void)
 	{
-		if (maxsize > size) {
-			data = (T *)realloc(data, size * sizeof(T));
-			maxsize = size;
+		if (maxsize > size && size > 0) {
+			T *newdata;
+
+			/* If the shrink fails the old, larger block is still valid. */
+			newdata = (T *)realloc(data, size * sizeof(T));
+			if (newdata != nullptr) {
+				data = newdata;
+				maxsize = size;
+			}
 		}
 		return(data);
 	}

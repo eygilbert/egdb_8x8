@@ -156,7 +156,7 @@ struct CHINOOK_DATA {
 
 
 /* Information about the db fileset. */
-static DB_FILE dbfile_info[] = {
+static const DB_FILE dbfile_info[] = {
 	{"db6", 6, 0},
 	{"db7.0", 7, 0},
 	{"db7.1", 7, 0},
@@ -186,7 +186,7 @@ static DB_FILE dbfile_info[] = {
 };
 
 /* A table of crc values for each database file. */
-static DBCRC dbcrc[] = {
+static const DBCRC dbcrc[] = {
 	{"db6", 0xf9f97079},
 	{"db6.idx", 0x8bcc7c29},
 	{"db7.0", 0x866d00e0},
@@ -242,12 +242,12 @@ static DBCRC dbcrc[] = {
 };
 
 /* Information about the db fileset. */
-static DB_FILE dbfile_info_italian[] = {
+static const DB_FILE dbfile_info_italian[] = {
 	{"idb6", 6, 0},
 };
 
 /* A table of crc values for each database file. */
-static DBCRC dbcrc_italian[] = {
+static const DBCRC dbcrc_italian[] = {
 	{"idb6", 0xac336760},
 	{"idb6.idx", 0x6c3deb60},
 };
@@ -276,7 +276,7 @@ static int runlength[256]; /* holds the run length for every byte. */
 static int Div[7] = {0, 1, 3, 9, 27, 81, 243};
 
 /* An array to map Chinook values into egdb values. */
-int chinook_to_egdb[] = {
+static const int chinook_to_egdb[] = {
 	EGDB_DRAW,
 	EGDB_WIN,
 	EGDB_LOSS,
@@ -652,8 +652,8 @@ static int initdblookup(CHINOOK_DATA *hdat, int pieces, int cache_mb, const char
 		(*hdat->log_msg_fn)("Cannot allocate memory for ci_base_table.\n");
 		return(-1);
 	}
-	allocated_bytes += CI_TABLESIZE + sizeof(int *);
-	index_bytes += CI_TABLESIZE + sizeof(int *);
+	allocated_bytes += CI_TABLESIZE * sizeof(int *);
+	index_bytes += CI_TABLESIZE * sizeof(int *);
 
 	/* Allocate the dbfile[] array. */
 	if (hdat->db_type == EGDB_CHINOOK_WLD)
@@ -735,12 +735,17 @@ static int initdblookup(CHINOOK_DATA *hdat, int pieces, int cache_mb, const char
 
 			sprintf(msg, "autoload %s\n", hdat->dbfiles[i].filename);
 			(*hdat->log_msg_fn)(msg);
-			stat = read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].autoload, hdat->dbfiles[i].bytes, get_page_size());
-			if (!stat)
-				stat = GetLastError();
+			if (!read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].autoload, hdat->dbfiles[i].bytes, get_page_size())) {
+				sprintf(msg, "ERROR: autoload read failed for %s, error %lu\n", hdat->dbfiles[i].filename, GetLastError());
+				(*hdat->log_msg_fn)(msg);
+				CloseHandle(hdat->dbfiles[i].fp);
+				hdat->dbfiles[i].fp = INVALID_HANDLE_VALUE;
+				return(-1);
+			}
 
 			/* Close this database file, we're done with it. */
 			CloseHandle(hdat->dbfiles[i].fp);
+			hdat->dbfiles[i].fp = INVALID_HANDLE_VALUE;
 		}
 		else {
 			/* These slices are not autoloaded.
@@ -935,8 +940,6 @@ static int initdblookup(CHINOOK_DATA *hdat, int pieces, int cache_mb, const char
 int read_block(CHINOOK_DATA *hdat, DB_FILE *dbfile, int block)
 {
 	int use;
-	int read_count;
-	char msg[MAXMSG];
 
 	/* If this block is already cached, then exit. */
 	if (dbfile->cache_bufferi[block] != UNDEFINED_BLOCK_ID)
@@ -953,26 +956,12 @@ int read_block(CHINOOK_DATA *hdat, DB_FILE *dbfile, int block)
 
 	use = hdat->ccbs_top;
 
-	/* Seek to the block - block# * CACHE_BLOCK_SIZE. */
-	if (SetFilePointer(dbfile->fp, (block * CACHE_BLOCK_SIZE), NULL, FILE_BEGIN) == UNDEFINED_BLOCK_ID) {
-		(*hdat->log_msg_fn)("ERROR: dblookup seek failed\n");
-		return(CHINOOK_UNKNOWN);
-	}
-
-	/* Read in the IDX_BLOCK_SIZE bytes */
-	ReadFile(dbfile->fp, CACHE_DATAP(use), CACHE_BLOCK_SIZE, (unsigned long *)&read_count, NULL);
-	if (read_count != CACHE_BLOCK_SIZE) {
-
-		/* Check for error - should get CACHE_BLOCK_SIZE bytes,
-		 * except for the last block.
-		 */
-		if (block != (dbfile->num_cache_blocks - 1)) {
-			sprintf(msg, "ERROR: dblookup read failed, count %d, block %ld\n",
-						read_count, block);
-			(*hdat->log_msg_fn)(msg);
-			return(CHINOOK_UNKNOWN);
-		}
-	}
+	/* This ccb is unused until the read succeeds. If the read fails it stays
+	 * at the top of the lru list, so the next load reuses it.
+	 */
+	hdat->ccbs[use].blocknum = UNDEFINED_BLOCK_ID;
+	if (!read_cache_block(dbfile->fp, (int64_t)block * CACHE_BLOCK_SIZE, CACHE_DATAP(use), CACHE_BLOCK_SIZE, hdat->log_msg_fn))
+		return(1);
 
 	/* Mark this buffer as in use */
 	dbfile->cache_bufferi[block] = use;
@@ -1126,6 +1115,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 	DBENTRY *dbentry;
 	int start, end, middle, i;
 	unsigned char *buffer;
+	uint16_t blockcopy[IDX_BLOCK_SIZE / 2];		/* private copy of a cached index block, 16-bit aligned. */
 	int *dbbufptr;
 	uint32_t *dbindex;
 	char msg[MAXMSG];
@@ -1133,9 +1123,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 	unsigned short *diskblock16;
 	unsigned short *rltp;
 #endif
-#if CACHE_BLOCKS_PER_PROBE3 <= 1
-	int read_count;
-#else
+#if CACHE_BLOCKS_PER_PROBE3 > 1
 	int probe3_block;
 #if !FAST_PROBE3_READ
 	int last_block;
@@ -1181,20 +1169,28 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 		return(EGDB_UNKNOWN);
 	}
 
+	/* If one side has nothing, return appropriate value.
+	 * This must come before the DBTable access, because 8 pieces against
+	 * nothing gives DBINDEX == DBTABLESIZE, one past the end of the table.
+	 */
+	if ((nbm + nbk) == 0) {
+		++hdat->lookup_stats.db_returns;
+		return(EGDB_LOSS);
+	}
+	if ((nwm + nwk) == 0) {
+		++hdat->lookup_stats.db_returns;
+		return(EGDB_WIN);
+	}
+
+	/* DBTable only has entries for the slices that were opened. */
+	if (nbm + nwm + nwk + nbk > hdat->maxpieces) {
+		++hdat->lookup_stats.db_not_present_requests;
+		return(EGDB_UNKNOWN);
+	}
+
 	/* Lookup info for this slice. */
 	dbentry = hdat->DBTable[DBINDEX(nbk, nwk, nbm, nwm)];
 	if (dbentry == 0) {
-
-		/* If one side has nothing, return appropriate value. */
-		if ((nbm + nbk) == 0) {
-			++hdat->lookup_stats.db_returns;
-			return(EGDB_LOSS);
-		}
-		if ((nwm + nwk) == 0) {
-			++hdat->lookup_stats.db_returns;
-			return(EGDB_WIN);
-		}
-
 		(*hdat->log_msg_fn)("ERROR: NULL DBTable entry for this pos!\n");
 		return(EGDB_UNKNOWN);
 	}
@@ -1321,31 +1317,15 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 
 			use = hdat->ccbs_top;
 
-			/* Seek to the block - block# * CACHE_BLOCK_SIZE. */
-			if (SetFilePointer(dbentry->file->fp, middle * CACHE_BLOCK_SIZE, NULL, FILE_BEGIN) == -1) {
-				(*hdat->log_msg_fn)("ERROR: dblookup seek failed\n");
+			/* This ccb is unused until the read succeeds. If the read fails it stays
+			 * at the top of the lru list, so the next load reuses it.
+			 */
+			hdat->ccbs[use].blocknum = UNDEFINED_BLOCK_ID;
+			if (!read_cache_block(dbentry->file->fp, (int64_t)middle * CACHE_BLOCK_SIZE, CACHE_DATAP(use), CACHE_BLOCK_SIZE, hdat->log_msg_fn)) {
 #if SMP
 				ReleaseSpinLock(hdat->lock);
 #endif
 				return(EGDB_UNKNOWN);
-			}
-
-			/* Read in the CACHE_BLOCK_SIZE bytes */
-			ReadFile(dbentry->file->fp, CACHE_DATAP(use), CACHE_BLOCK_SIZE, (unsigned long *)&read_count, NULL);
-			if (read_count != CACHE_BLOCK_SIZE) {
-
-				/* Check for error - should get CACHE_BLOCK_SIZE bytes,
-				 * except for the last block.
-				 */
-				if (middle != (dbentry->file->num_cache_blocks - 1)) {
-					sprintf(msg, "ERROR: dblookup read failed %d %ld %ld %ld %ld\n",
-							read_count, start, end, middle, dbentry->file->num_cache_blocks - 1);
-					(*hdat->log_msg_fn)(msg);
-#if SMP
-					ReleaseSpinLock(hdat->lock);
-#endif
-					return(EGDB_UNKNOWN);
-				}
 			}
 
 			/* Mark this buffer as in use */
@@ -1383,6 +1363,12 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 
 		/* Get a pointer to the 1K index block within the cache buffer. */
 		buffer = CACHE_DATAP(use) + (start % IDX_BLOCKS_PER_CACHE_BLOCK) * IDX_BLOCK_SIZE;
+
+		/* Copy the index block while we still hold the lock. After the lock is
+		 * released, another thread can evict this cache block and overwrite its data.
+		 */
+		memcpy(blockcopy, buffer, IDX_BLOCK_SIZE);
+		buffer = (unsigned char *)blockcopy;
 #if SMP
 		ReleaseSpinLock(hdat->lock);
 #endif
@@ -1458,10 +1444,14 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 #else
 	if (back) {
 		cindex = dbindex[start + 1];
-		for (i = IDX_BLOCK_SIZE - 1; cindex > index; --i)
+		for (i = IDX_BLOCK_SIZE - 1; cindex > index && i >= 0; --i)
 			cindex -= runlength[buffer[i]];
 
 		i++;
+
+		/* If cindex > index we ran off the start of the block, or the loop never ran. */
+		if (cindex > index || i == IDX_BLOCK_SIZE)
+			i = -1;
 	}
 	else {
 
@@ -1475,14 +1465,33 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 			cindex = dbindex[start];
 		}
 
-		for ( ; cindex <= index; ++i)
+		for ( ; cindex <= index && i < IDX_BLOCK_SIZE; ++i)
 			cindex += runlength[buffer[i]];
 
-		/* Now cindex > index, go back one byte. */
-		--i;
-		cindex -= runlength[buffer[i]];
+		/* Now cindex > index, go back one byte.
+		 * If cindex <= index we ran off the end of the block.
+		 */
+		if (cindex <= index || i == 0)
+			i = -1;
+		else {
+			--i;
+			cindex -= runlength[buffer[i]];
+		}
 	}
 #endif
+
+	/* Safety check, before buffer[i] is used. */
+	if (i < 0 || i >= IDX_BLOCK_SIZE) {
+		(*hdat->log_msg_fn)("ERROR: scanned block and did not find\n");
+		sprintf(msg, "INDEX %d CINDEX %d\n", index, cindex);
+		(*hdat->log_msg_fn)(msg);
+		sprintf(msg, "Start %d end %d byte %d = middle %d\n",
+			dbentry->start_idx_block,
+			dbentry->end_idx_block,
+			dbentry->startbyte, middle);
+		(*hdat->log_msg_fn)(msg);
+		return(EGDB_UNKNOWN);
+	}
 
 	if (buffer[i] >= 243)
 
@@ -1494,19 +1503,6 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *board, int 
 		diff = index - cindex;
 		result = buffer[i] % Div[5 - diff + 1];
 		result = result / Div[5 - diff];
-	}
-
-	/* Safety check */
-	if (i < 0 || i >= IDX_BLOCK_SIZE) {
-		(*hdat->log_msg_fn)("ERROR: scanned block and did not find\n");
-		sprintf(msg, "INDEX %d CINDEX %d\n", index, cindex);
-		(*hdat->log_msg_fn)(msg);
-		sprintf(msg, "Start %d end %d byte %d = middle %d\n",
-			dbentry->start_idx_block,
-			dbentry->end_idx_block,
-			dbentry->startbyte, middle);
-		(*hdat->log_msg_fn)(msg);
-		return(EGDB_UNKNOWN);
 	}
 
 	++hdat->lookup_stats.db_returns;
@@ -1640,6 +1636,8 @@ static int *create_bm_indices(int nbm, int nwm, int bmrank, int wmrank,
 	 * checker configuration.
 	 */
 	table = (int *)malloc((*num_base_indices) * sizeof(int));
+	if (table == NULL)
+		return(NULL);		/* the caller reports the error. */
 	memset(table, 0, (*num_base_indices) * sizeof(int));
 
 	/* initialize the array with FIRST & BASE */
@@ -1802,7 +1800,7 @@ static int verify_crc(EGDB_DRIVER *handle)
 	int i;
 	int status;
 	unsigned int crc;
-	DBCRC *pcrc;
+	const DBCRC *pcrc;
 	FILE *fp;
 	char filename[MAXFILENAME];
 	char msg[MAXMSG];
@@ -1841,6 +1839,7 @@ static int verify_crc(EGDB_DRIVER *handle)
 		(*hdat->log_msg_fn)(msg);
 
 		crc = file_crc_calc(fp);
+		fclose(fp);
 		if (crc != pcrc->crc) {
 			sprintf(msg, "file %s failed crc check, expected %08x, got %08x\n",
 				filename, pcrc->crc, crc);
@@ -1848,7 +1847,6 @@ static int verify_crc(EGDB_DRIVER *handle)
 			status = 1;
 			continue;
 		}
-		fclose(fp);
 
 		/* Build the data filename. */
 		sprintf(filename, "%s", hdat->dbfiles[i].filename);
@@ -1875,6 +1873,7 @@ static int verify_crc(EGDB_DRIVER *handle)
 		(*hdat->log_msg_fn)(msg);
 
 		crc = file_crc_calc(fp);
+		fclose(fp);
 		if (crc != pcrc->crc) {
 			sprintf(msg, "file %s failed crc check, expected %08x, got %08x\n",
 				filename, pcrc->crc, crc);
@@ -1882,7 +1881,6 @@ static int verify_crc(EGDB_DRIVER *handle)
 			status = 1;
 			continue;
 		}
-		fclose(fp);
 	}
 	return(status);
 }

@@ -86,6 +86,57 @@ inline int find_compr_val_rev(RUNL_T *runlength_table, COMPR_BLOCK_T *compr_bloc
 
 
 /*
+ * Same as find_compr_val_fwd, but never reads compr_block[] at or past compr_block_endi.
+ * Return -1 if the target is not found before compr_block_endi, or if the result
+ * would be before the start of compr_block (corrupt data).
+ */
+template <class RUNL_T, class COMPR_BLOCK_T, class INDEX_T>
+inline int find_compr_val_fwd_checked(RUNL_T *runlength_table, COMPR_BLOCK_T *compr_block, int compr_block_starti, int compr_block_endi, INDEX_T target_pos_index, INDEX_T &entry_and_exit_pos_index)
+{
+	int blocki = compr_block_starti;
+	while (entry_and_exit_pos_index <= target_pos_index) {
+		if (blocki >= compr_block_endi)
+			return(-1);
+		entry_and_exit_pos_index += runlength_table[compr_block[blocki]];
+		blocki++;
+	}
+
+	/* If the loop never ran, back up to the entry before compr_block_starti, like find_compr_val_fwd.
+	 * Cake relies on this when a subdb starts at an odd byte and the target is in that byte.
+	 * Only fail if that would read before the start of the block.
+	 */
+	if (blocki == 0)
+		return(-1);
+
+	blocki--;
+	entry_and_exit_pos_index -= runlength_table[compr_block[blocki]];
+	return(blocki);
+}
+
+
+/*
+ * Same as find_compr_val_rev, but never reads compr_block[] below compr_block_firsti.
+ * Return -1 if the target is not found at or after compr_block_firsti (corrupt data).
+ */
+template <class RUNL_T, class COMPR_BLOCK_T, class INDEX_T>
+inline int find_compr_val_rev_checked(RUNL_T *runlength_table, COMPR_BLOCK_T *compr_block, int compr_block_lasti, int compr_block_firsti, INDEX_T target_pos_index, INDEX_T &entry_and_exit_pos_index)
+{
+	int blocki = compr_block_lasti;
+	while (entry_and_exit_pos_index > target_pos_index) {
+		if (blocki <= compr_block_firsti)
+			return(-1);
+		blocki--;
+		entry_and_exit_pos_index -= runlength_table[compr_block[blocki]];
+	}
+
+	/* If the loop never ran, the target is at or after the end of the search. */
+	if (blocki == compr_block_lasti)
+		return(-1);
+	return(blocki);
+}
+
+
+/*
  * Extract a WLD value from an RLE compression token.
  */
 inline int decode_compr_wld(uint8_t compr_tok, int index)

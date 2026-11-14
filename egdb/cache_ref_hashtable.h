@@ -7,6 +7,11 @@
 
 class cache_ref_ht {
 public:
+
+	cache_ref_ht() {
+		reset();
+	}
+
 	struct node {
 		unsigned short filenum;
 		unsigned int blocknum;		/* The cache block number within the database file. */
@@ -163,8 +168,10 @@ public:
 	{
 		reset();
 		num_nodes = num_nodes_;
-		tablesize = next_pow2(num_nodes);
 		if (num_nodes > 0) {
+
+			/* Only call next_pow2 for num_nodes > 0, MSB(0) is undefined. */
+			tablesize = next_pow2(num_nodes);
 			table = (node **)std::malloc(tablesize * sizeof(table[0]));
 			if (table == nullptr)
 				return(true);
@@ -204,24 +211,31 @@ public:
 			free(table);
 		if (nodes_base != nullptr)
 			free(nodes_base);
+		reset();
 	}
 
 	void reset(void)
 	{
 		nodes_base = nullptr;
 		table = nullptr;
+		free_list = nullptr;
+		modulus_mask = 0;
+		tablesize = 0;
+		num_nodes = 0;
 	}
 
-	void test(void)
+	/* Return true on error. */
+	bool test(void)
 	{
 		bool quick_test = true;
 		unsigned int mults[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 30};
 		for (int i = 0; i < ARRAY_SIZE(mults); ++i) {
 			if (test(mults[i] * 200000))
-				return;
+				return(true);
 			if (quick_test)
 				i += 4;
 		}
+		return(false);
 	}
 
 private:

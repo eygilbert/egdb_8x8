@@ -58,7 +58,19 @@ struct DBFILE {
 
 // definition of a structure for compressed databases
 struct CPRSUBDB {
-	CPRSUBDB() {};
+	CPRSUBDB() {
+		num_idx_blocks = 0;
+		first_idx_block = 0;
+		first_miniblock = 0;
+		file = nullptr;		/* stays nullptr if this subslice is not in the index file. */
+#if !CACHE_MINIBLOCK_LENGTHS
+		miniblock_lengths_offset = 0;
+		miniblock_lengths_size = 0;
+#endif
+#if LOG_HITS
+		hits = 0;
+#endif
+	};
 	~CPRSUBDB() {};
 	std::vector<Repair::Rule> repair_syms;
 	std::vector<uint16_t> repair_lengths;
@@ -96,6 +108,7 @@ struct CCB {
 
 struct SLICE32_DATA {
 	SLICE32_DATA() {
+		memset(&lookup_stats, 0, sizeof(lookup_stats));
 		db_type = EGDB_KINGSROW_DTW;	/* It might get over-written to Italian type. */
 		db_filepath[0] = 0;
 		maxpieces = 0;
@@ -309,6 +322,7 @@ uint32_t get_miniblock_length(CPRSUBDB *subdb, int index)
 	bitoffset = (index * (uint64_t)nbits_) & 7;
 	start = (index * (uint64_t)nbits_) / 8;
 	fseek(subdb->file->fp_idx, (int32_t)start + subdb->miniblock_lengths_offset, SEEK_SET);
+	temp.word64 = 0;
 	temp.word8[0] = fgetc(subdb->file->fp_idx);
 	bits_copied = 8 - bitoffset;
 	for (int i = 1; bits_copied < nbits_; ++i, bits_copied += 8)
@@ -458,6 +472,13 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 	get_subindices(index64, subslicenum, index, DTW_SUBSLICE_INDICES);
 
 	dbpointer += subslicenum;
+
+	/* This subslice was not found in the index file. */
+	if (dbpointer->file == nullptr) {
+		++hdat->lookup_stats.db_not_present_requests;
+		return(EGDB_SUBDB_UNAVAILABLE);
+	}
+
 	if (benchmarks) {
 		tdiff = timer.elapsed_usec();
 		hdat->log_msg("timer: indexing %.2f usec\n", tdiff);
@@ -510,6 +531,12 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 
 		/* If necessary load this block from disk, update lru list. */
 		ccbp = load_blocknum<CCB>(hdat, dbpointer, cache_blocknum, CACHE_BLOCKSIZE);
+		if (ccbp == NULL) {
+#if SMP
+			ReleaseSpinLock(hdat->lock);
+#endif
+			return(EGDB_UNKNOWN);
+		}
 	}
 
 	if (benchmarks)
@@ -989,7 +1016,7 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 			return(1);
 		}
 		dbpointer->indices.reserve(dbpointer->num_idx_blocks);
-		*allocated_bytes += dbpointer->num_idx_blocks + sizeof(dbpointer->indices[0]);
+		*allocated_bytes += dbpointer->num_idx_blocks * sizeof(dbpointer->indices[0]);
 
 		/* Read the number of miniblocks. */
 		uint32_t nminis;
@@ -1118,12 +1145,16 @@ static int egdb_close_slice32(EGDB_DRIVER *handle)
 			hdat->dbfiles[i].cache_bufferi = 0;
 		}
 
-		if (hdat->dbfiles[i].fp != INVALID_HANDLE_VALUE) {
+		if (hdat->dbfiles[i].fp != INVALID_HANDLE_VALUE)
 			CloseHandle(hdat->dbfiles[i].fp);
 #if !CACHE_MINIBLOCK_LENGTHS
+
+		/* The index file is opened before the data file, so after a failed open
+		 * fp_idx can be open while fp is not.
+		 */
+		if (hdat->dbfiles[i].fp_idx)
 			fclose(hdat->dbfiles[i].fp_idx);
 #endif
-		}
 	}
 	hdat->dbfiles.clear();
 	hdat->dbfiles.shrink_to_fit();
@@ -1140,12 +1171,12 @@ static int egdb_close_slice32(EGDB_DRIVER *handle)
 }
 
 
-static int verify_crc_stem(SLICE32_DATA *hdat, const char *stem, const char *ext, DBCRC *crctbl, int crcsize) 
+static int verify_crc_stem(SLICE32_DATA *hdat, const char *stem, const char *ext, const DBCRC *crctbl, int crcsize) 
 {
 	FILE *fp;
 	char filename[MAXFILENAME];
 	char msg[MAXMSG];
-	DBCRC *pcrc;
+	const DBCRC *pcrc;
 	unsigned int crc;
 
 	sprintf(filename, "%s.%s", stem, ext);
@@ -1255,9 +1286,24 @@ EGDB_DRIVER *egdb_open(EGDB_BITBOARD_TYPE bitboard_type, int pieces,
 	}
 
 #pragma warning(suppress : 4316)		// Can't do various aligns with "new".
-	handle->internal_data = new SLICE32_DATA;
+	handle->internal_data = new (std::nothrow) SLICE32_DATA;
+	if (!handle->internal_data) {
+		free(handle);
+		(*msg_fn)("Cannot allocate memory for driver handle.\n");
+		return(0);
+	}
 	((SLICE32_DATA *)(handle->internal_data))->db_type = db_type;
-	status = initdblookup((SLICE32_DATA *)handle->internal_data, pieces, cache_mb, directory, msg_fn);
+	try {
+		status = initdblookup((SLICE32_DATA *)handle->internal_data, pieces, cache_mb, directory, msg_fn);
+	}
+	catch (const std::exception &e) {
+		char msg[MAXMSG];
+
+		/* Out of memory, or another C++ exception. Don't let it escape the C interface. */
+		sprintf(msg, "egdb_open failed: %.100s\n", e.what());
+		(*msg_fn)(msg);
+		status = 1;
+	}
 	if (status) {
 		egdb_close_slice32(handle);
 		return(0);

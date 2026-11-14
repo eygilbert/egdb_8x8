@@ -14,7 +14,8 @@ struct egdb_info {
 	egdb_info() {clear();}
 	void clear(void) {
 		max_pieces = 0;
-		max_pieces_1side;
+		max_pieces_1side = 0;
+		dbtype = EGDB_KINGSROW_WLD;
 		handle = nullptr;
 	}
 };

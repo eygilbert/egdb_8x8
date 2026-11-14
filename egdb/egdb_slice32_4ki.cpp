@@ -95,6 +95,7 @@ struct CCB {
 
 struct SLICE32_DATA {
 	SLICE32_DATA() {
+		memset(&lookup_stats, 0, sizeof(lookup_stats));
 		db_filepath[0] = 0;
 		maxpieces = 0;
 		maxpiece = 5;
@@ -257,6 +258,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 	int dbfile_blocknum;
 	int returnvalue;
 	unsigned char *diskblock;
+	unsigned char blockcopy[SUBINDEX_BLOCKSIZE];	/* private copy of a cached subindex block. */
 	INDEX n_idx;
 	INDEX *indices;
 	unsigned char byte;
@@ -379,6 +381,12 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 
 			/* If necessary load this block from disk, update lru list. */
 			ccbp = load_blocknum<CCB>(hdat, dbpointer, dbfile_blocknum, CACHE_BLOCKSIZE);
+			if (ccbp == NULL) {
+#if SMP
+				ReleaseSpinLock(hdat->lock);
+#endif
+				return(EGDB_UNKNOWN);
+			}
 		}
 
 		/* Do a binary search to find the exact subindex.  This is complicated a bit by the
@@ -412,6 +420,12 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 			i = 0;
 		}
 		diskblock = ccbp->data + subidx_blocknum * SUBINDEX_BLOCKSIZE;
+
+		/* Copy the subindex block while we still hold the lock. After the lock is
+		 * released, another thread can evict this cache block and overwrite its data.
+		 */
+		memcpy(blockcopy, diskblock, SUBINDEX_BLOCKSIZE);
+		diskblock = blockcopy;
 #if SMP
 		ReleaseSpinLock(hdat->lock);
 #endif
@@ -427,7 +441,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 		 * set the start byte in this block: if it's block 0 of a db,
 		 * this can be !=0.
 		 */
-		while (n_idx <= index) {
+		while (n_idx <= index && i < SUBINDEX_BLOCKSIZE) {
 			n_idx += rle_compr::runlength_inc[diskblock[i]];
 			i++;
 		}
@@ -437,10 +451,9 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 		 * we overshot again, move back:
 		 */
 		i--;
-		n_idx -= rle_compr::runlength_inc[diskblock[i]];
 
-		/* Do some simple error checking. */
-		if (i < 0 || i >= SUBINDEX_BLOCKSIZE) {
+		/* Do some simple error checking. If n_idx <= index we ran off the end of the subindex block. */
+		if (n_idx <= index || i < 0) {
 			char msg[MAXMSG];
 
 			sprintf(msg, "db block array index outside block bounds: %d\nFile %s\n",
@@ -448,7 +461,8 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 			(*hdat->log_msg_fn)(msg);
 			return EGDB_UNKNOWN;
 		}
-		
+		n_idx -= rle_compr::runlength_inc[diskblock[i]];
+
 		/* The target position is in diskblock[i]. */
 		if (diskblock[i] >= 36) {
 
@@ -470,6 +484,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 				break;
 			default:
 				(*hdat->log_msg_fn)("Error unpacking position value\n");
+				returnvalue = EGDB_UNKNOWN;
 				break;
 			}
 		}
@@ -478,9 +493,9 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 		return(returnvalue);
 	}
 	else {
-		i = rle_compr::find_compr_val_fwd(rle_compr::runlength, diskblock, i, index, n_idx);
+		i = rle_compr::find_compr_val_fwd_checked(rle_compr::runlength, diskblock, i, SUBINDEX_BLOCKSIZE, index, n_idx);
 
-		/* Do some simple error checking. */
+		/* Do some simple error checking. i is -1 if we ran off the end of the subindex block. */
 		if (i < 0 || i >= SUBINDEX_BLOCKSIZE) {
 			char msg[MAXMSG];
 
@@ -878,7 +893,13 @@ static int initdblookup(SLICE32_DATA *hdat, int pieces, int cache_mb, const char
 				return(-1);
 			}
 
-			read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].file_cache, size, get_page_size());
+			if (!read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].file_cache, size, get_page_size())) {
+				sprintf(msg, "ERROR: autoload read failed for %s, error %lu\n", hdat->dbfiles[i].name, GetLastError());
+				(*hdat->log_msg_fn)(msg);
+				CloseHandle(hdat->dbfiles[i].fp);
+				hdat->dbfiles[i].fp = INVALID_HANDLE_VALUE;
+				return(1);
+			}
 
 			/* Close the db file, we are done with it. */
 			CloseHandle(hdat->dbfiles[i].fp);
@@ -1228,7 +1249,7 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (prev)
 		prev->last_subidx_block = (unsigned char)(((filesize - 1) % IDX_BLOCKSIZE) / SUBINDEX_BLOCKSIZE);
 
-	sprintf(msg, "%13s index blocks: %s\n", format_with_commas(f->num_datablocks).c_str(), name);
+	sprintf(msg, "%13s index blocks: %s\n", format_with_commas(f->num_idx_blocks).c_str(), name);
 	(*hdat->log_msg_fn)(msg);
 
 	return(0);
@@ -1244,6 +1265,7 @@ static void build_file_table(SLICE32_DATA *hdat)
 	DBFILE file;
 
 	memset(&file, 0, sizeof(file));
+	file.fp = INVALID_HANDLE_VALUE;		/* so close after a failed open doesn't close handle 0. */
 	for (slice = Slice(2); slice.npieces() <= hdat->maxpieces; ) {
 		if (slice.npieces() <= hdat->same_pieces_one_file) {
 			sprintf(file.name, "db%d", slice.npieces());
@@ -1321,12 +1343,12 @@ static int egdb_close_slice32(EGDB_DRIVER *handle)
 }
 
 
-static int verify_crc_stem(SLICE32_DATA *hdat, const char *stem, const char *ext, DBCRC *crctbl, int crcsize) 
+static int verify_crc_stem(SLICE32_DATA *hdat, const char *stem, const char *ext, const DBCRC *crctbl, int crcsize) 
 {
 	FILE *fp;
 	char filename[MAXFILENAME];
 	char msg[MAXMSG];
-	DBCRC *pcrc;
+	const DBCRC *pcrc;
 	unsigned int crc;
 
 	sprintf(filename, "%s.%s", stem, ext);
@@ -1436,14 +1458,24 @@ EGDB_DRIVER *egdb_open(EGDB_BITBOARD_TYPE bitboard_type, int pieces,
 		return(0);
 	}
 #pragma warning(suppress : 4316)		// Can't do various aligns with "new".
-	handle->internal_data = new SLICE32_DATA;
+	handle->internal_data = new (std::nothrow) SLICE32_DATA;
 	if (!handle->internal_data) {
 		free(handle);
 		(*msg_fn)("Cannot allocate memory for driver handle.\n");
 		return(0);
 	}
 	((SLICE32_DATA *)(handle->internal_data))->db_type = db_type;
-	status = initdblookup((SLICE32_DATA *)handle->internal_data, pieces, cache_mb, directory, msg_fn);
+	try {
+		status = initdblookup((SLICE32_DATA *)handle->internal_data, pieces, cache_mb, directory, msg_fn);
+	}
+	catch (const std::exception &e) {
+		char msg[MAXMSG];
+
+		/* Out of memory, or another C++ exception. Don't let it escape the C interface. */
+		sprintf(msg, "egdb_open failed: %.100s\n", e.what());
+		(*msg_fn)(msg);
+		status = 1;
+	}
 	if (status) {
 		egdb_close_slice32(handle);
 		return(0);

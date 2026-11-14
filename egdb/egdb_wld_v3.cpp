@@ -21,7 +21,7 @@
 
 #ifdef BINARY_IDX_FILES
 #include "fileutils.h"
-#include "..\text2bin_indexes\text2bin_indexes.h"
+#include "..\convert_idx\convert_idx.h"
 #endif
 
 #define MIN_AUTOLOAD_PIECES 6
@@ -37,7 +37,7 @@ EGDB_DRIVER *egdb_open(EGDB_BITBOARD_TYPE bitboard_type, int pieces,
 	EGDB_DRIVER *handle;
 	SLICE32_DATA *hdat;
 
-	if (db_type != EGDB_KINGSROW32_WLD_TUN_12PC) {
+	if (db_type != EGDB_KINGSROW32_WLD_TUN_BINIDX) {
 		(*msg_fn)("Invalid db type in egdb_open().\n");
 		return(0);
 	}
@@ -47,7 +47,7 @@ EGDB_DRIVER *egdb_open(EGDB_BITBOARD_TYPE bitboard_type, int pieces,
 		return(0);
 	}
 #pragma warning(suppress : 4316)		// Can't do various aligns with "new".
-	handle->internal_data = new SLICE32_DATA;
+	handle->internal_data = new (std::nothrow) SLICE32_DATA;
 	if (!handle->internal_data) {
 		free(handle);
 		(*msg_fn)("Cannot allocate memory for driver handle.\n");
@@ -71,7 +71,17 @@ EGDB_DRIVER *egdb_open(EGDB_BITBOARD_TYPE bitboard_type, int pieces,
 	hdat->same_pieces_one_file = 8;
 	hdat->log_msg_fn = msg_fn;
 
-	status = initdblookup(hdat, pieces, cache_mb, directory, msg_fn);
+	try {
+		status = initdblookup(hdat, pieces, cache_mb, directory, msg_fn);
+	}
+	catch (const std::exception &e) {
+		char msg[MAXMSG];
+
+		/* Out of memory, or another C++ exception. Don't let it escape the C interface. */
+		sprintf(msg, "egdb_open failed: %.100s\n", e.what());
+		(*msg_fn)(msg);
+		status = 1;
+	}
 	if (status) {
 		egdb_close_slice32(handle);
 		return(0);

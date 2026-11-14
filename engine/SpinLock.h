@@ -23,5 +23,8 @@ typedef volatile long *const SPINLOCK_P;
 #define ResetSpinLock(s) SetLocked(s, 0) 
 static INLINE void volatile ReleaseSpinLock(SPINLOCK_P s) {SetLocked(s, 0);} 
 static INLINE int volatile TrySpinLock(SPINLOCK_P s) {return !(IsLocked(s) || LockedExchange(s, 1));} 
-static INLINE void volatile AcquireSpinLock(SPINLOCK_P s) {while(IsLocked(s) || LockedExchange(s, 1));}
+static INLINE void volatile AcquireSpinLock(SPINLOCK_P s) {
+    while (IsLocked(s) || LockedExchange(s, 1))
+        _mm_pause();
+}
 #endif

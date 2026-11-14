@@ -21,7 +21,7 @@
 
 #ifdef BINARY_IDX_FILES
 #include "fileutils.h"
-#include "..\convert2db12\convert2db12.h"
+#include "..\convert_idx\convert_idx.h"
 #endif
 
 
@@ -43,7 +43,7 @@ EGDB_DRIVER *egdb_open(EGDB_BITBOARD_TYPE bitboard_type, int pieces,
 		return(0);
 	}
 #pragma warning(suppress : 4316)		// Can't do various aligns with "new".
-	handle->internal_data = new SLICE32_DATA;
+	handle->internal_data = new (std::nothrow) SLICE32_DATA;
 	if (!handle->internal_data) {
 		free(handle);
 		(*msg_fn)("Cannot allocate memory for driver handle.\n");
@@ -62,7 +62,17 @@ EGDB_DRIVER *egdb_open(EGDB_BITBOARD_TYPE bitboard_type, int pieces,
 	hdat->same_pieces_one_file = 7;
 	hdat->log_msg_fn = msg_fn;
 
-	status = initdblookup(hdat, pieces, cache_mb, directory, msg_fn);
+	try {
+		status = initdblookup(hdat, pieces, cache_mb, directory, msg_fn);
+	}
+	catch (const std::exception &e) {
+		char msg[MAXMSG];
+
+		/* Out of memory, or another C++ exception. Don't let it escape the C interface. */
+		sprintf(msg, "egdb_open failed: %.100s\n", e.what());
+		(*msg_fn)(msg);
+		status = 1;
+	}
 	if (status) {
 		egdb_close_slice32(handle);
 		return(0);

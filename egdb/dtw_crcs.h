@@ -2,7 +2,7 @@
 
 #include "egdb_internal.h"
 
-static DBCRC english_dtw_crc[] = {
+static const DBCRC english_dtw_crc[] = {
 {"db2.cpr_dtw", 0x9beb44d0},
 {"db2.idx_dtw", 0x5832e90f},
 {"db3.cpr_dtw", 0x6b8c6d5d},
@@ -241,7 +241,7 @@ static DBCRC english_dtw_crc[] = {
 {"db8-5030.idx_dtw", 0x1e679ec8},
 };
 
-static DBCRC italian_dtw_crc[] = {
+static const DBCRC italian_dtw_crc[] = {
 {"db2.cpr_dtw", 0x1eeb631a},
 {"db2.idx_dtw", 0x627c8a44},
 {"db3.cpr_dtw", 0x2acb0724},

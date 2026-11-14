@@ -15,7 +15,7 @@ typedef struct {
 	unsigned int crc;
 } EGDB_FIND_INFO;
 
-EGDB_FIND_INFO egdb_find_table[] = {
+static const EGDB_FIND_INFO egdb_find_table[] = {
 
 	/* Chinook db8 */
 	{EGDB_CHINOOK_WLD, "db8.00.idx", 8, 0x392b283f},
@@ -36,11 +36,11 @@ EGDB_FIND_INFO egdb_find_table[] = {
 
 
 	/* Slice32 Tunstall 12-piece. */
-	{EGDB_KINGSROW32_WLD_TUN_12PC, "db12-1524.base2", 12, 0xb163eafb},
-	{EGDB_KINGSROW32_WLD_TUN_12PC, "db11-5114.base2", 11, 0xaf5e697d},
-	{EGDB_KINGSROW32_WLD_TUN_12PC, "db10-6040.base2", 10, 0x88ce576b},
-	{EGDB_KINGSROW32_WLD_TUN_12PC, "db9-5040.base2", 9, 0xb1de71aa},
-	{EGDB_KINGSROW32_WLD_TUN_12PC, "db8.base2", 8, 0x8d99c99f},
+	{EGDB_KINGSROW32_WLD_TUN_BINIDX, "db12-6060.base2", 12, 0xe51be751},
+	{EGDB_KINGSROW32_WLD_TUN_BINIDX, "db11-6050.base2", 11, 0x6e2a9821},
+	{EGDB_KINGSROW32_WLD_TUN_BINIDX, "db10-6040.base2", 10, 0x88ce576b},
+	{EGDB_KINGSROW32_WLD_TUN_BINIDX, "db9-5040.base2", 9, 0xb1de71aa},
+	{EGDB_KINGSROW32_WLD_TUN_BINIDX, "db8.base2", 8, 0x8d99c99f},
 
 	/* Slice32 Tunstall. */
 	{EGDB_KINGSROW32_WLD_TUN, "db10-5050.idx1", 10, 0xf00cbd12},
@@ -74,6 +74,14 @@ EGDB_FIND_INFO egdb_find_table[] = {
 	{EGDB_KINGSROW32_MTC, "db4.idx_mtc", 4, 0x06447ee0},
 	{EGDB_KINGSROW32_MTC, "db3.idx_mtc", 3, 0x70382098},
 	{EGDB_KINGSROW32_MTC, "db2.idx_mtc", 2, 0x0e707590},
+
+
+	{EGDB_KINGSROW_MTC_BINIDX, "db12-1533.bidx_mtc", 12, 0x559b486d},
+	{EGDB_KINGSROW_MTC_BINIDX, "db11-2414.bidx_mtc", 11, 0x748a60df},
+	{EGDB_KINGSROW_MTC_BINIDX, "db10-0505.bidx_mtc", 10, 0xd8fca18f},
+	{EGDB_KINGSROW_MTC_BINIDX, "db9-0504.bidx_mtc", 9, 0xd52898a8},
+	{EGDB_KINGSROW_MTC_BINIDX, "db8.bidx_mtc", 8, 0xce5e383b},
+	{EGDB_KINGSROW_MTC_BINIDX, "db7.bidx_mtc", 7, 0x9e3ab30a},
 
 	/* Chinook Italian WLD. */
 	{EGDB_CHINOOK_ITALIAN_WLD, "idb6.idx", 6, 0x6c3deb60},
@@ -129,10 +137,12 @@ EGDB_API int egdb_identify(const char *directory, EGDB_TYPE *egdb_type, int *max
 	unsigned int crc;
 	FILE *fp;
 	const char *sep;
-	EGDB_FIND_INFO *tablep;
+	const EGDB_FIND_INFO *tablep;
 	char name[MAXFILENAME];
 
 	len = (int)strlen(directory);
+	if (len > MAX_DB_DIRECTORY_LEN)
+		return(1);
 	if (len && (directory[len - 1] != '\\'))
 		sep = "\\";
 	else

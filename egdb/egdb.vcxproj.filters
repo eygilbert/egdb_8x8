@@ -46,9 +46,6 @@
     <ClCompile Include="slice.cpp">
       <Filter>egdb</Filter>
     </ClCompile>
-    <ClCompile Include="egdb_slice32_tunstall.cpp">
-      <Filter>egdb</Filter>
-    </ClCompile>
     <ClCompile Include="bitboard_convert.cpp">
       <Filter>egdb</Filter>
     </ClCompile>
@@ -84,9 +81,6 @@
     </ClCompile>
     <ClCompile Include="..\engine\instruction_set.cpp">
       <Filter>engine</Filter>
-    </ClCompile>
-    <ClCompile Include="egdb_slice32_tunstall_12pc.cpp">
-      <Filter>egdb</Filter>
     </ClCompile>
     <ClCompile Include="tun_v2_decompress.cpp">
       <Filter>egdb</Filter>
@@ -183,6 +177,7 @@
     <ClInclude Include="egdb_tunstall.h">
       <Filter>egdb</Filter>
     </ClInclude>
+    <ClInclude Include="..\builddb\rle_tables.h" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="tunstall_decompress_v2.txt">

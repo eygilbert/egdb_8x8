@@ -59,7 +59,7 @@ int main()
 
 		value = handle->lookup(handle, &positions[i].pos, positions[i].color, 0);
 		if (value != positions[i].value) {
-			printf("%d: lookup error, expected %d, got %d\n", i, value, positions[i].value);
+			printf("%d: lookup error, expected %d, got %d\n", i, positions[i].value, value);
 			++nerrors;
 		}
 	}

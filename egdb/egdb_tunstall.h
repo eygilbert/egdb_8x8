@@ -9,10 +9,19 @@
 /* Allocate cache buffers CACHE_ALLOC_COUNT at a time. */
 #define CACHE_ALLOC_COUNT 512
 
-/* If he didn't give us enough memory for at least MIN_CACHE_BUF_BYTES of
- * buffers, then use that much.
+/* If he didn't give us enough memory for the indexing plus a minimum of cache buffers,
+ * then use the minimum anyway. The minimum is a quarter of the indexing size, between
+ * MIN_CACHE_BUF_BYTES and MAX_MIN_CACHE_BUF_BYTES, so that a large db (12 pieces, with
+ * 4.5gb of indexing) still gets a usable cache. The indexing size depends on the number
+ * of pieces he asked for.
  */
 #define MIN_CACHE_BUF_BYTES (10 * ONE_MB)
+#ifdef _WIN64
+#define MAX_MIN_CACHE_BUF_BYTES (1000 * (int64_t)ONE_MB)
+#else
+#define MAX_MIN_CACHE_BUF_BYTES MIN_CACHE_BUF_BYTES
+#endif
+const int max_preload_blocks = 1000000;		/* Don't allow preload to take too long. */
 
 typedef unsigned int INDEX;
 
@@ -80,6 +89,7 @@ struct CCB {
 
 struct SLICE32_DATA {
 	SLICE32_DATA() {
+		memset(&lookup_stats, 0, sizeof(lookup_stats));
 		db_filepath[0] = 0;
 		maxpiece = 0;
 		maxpieces = 0;
@@ -223,24 +233,14 @@ static EGDB_STATS *get_db_stats(EGDB_DRIVER *handle)
 
 
 #ifdef USE_HT
-void read_block_from_file(SLICE32_DATA *hdat, CCB *ccb)
+/*
+ * Read block blocknum of dbfiles[filenum] into ccb->data.
+ * Return 1 on success, 0 on error.
+ */
+int read_block_from_file(SLICE32_DATA *hdat, CCB *ccb, unsigned int filenum, unsigned int blocknum)
 {
-	I64_HIGH_LOW filepos;
-	DWORD bytes_read;
-	BOOL stat;
-	HANDLE hfile;
-
-	filepos.word64 = (int64_t)ccb->ht_node->blocknum * CACHE_BLOCKSIZE;
-	hfile = hdat->dbfiles[ccb->ht_node->filenum].fp;
-
-	/* Seek the start position. */
-	if (SetFilePointer(hfile, filepos.words32.low32, (long*)&filepos.words32.high32, FILE_BEGIN) == -1) {
-		(*hdat->log_msg_fn)("\nseek failed\n");
-		return;
-	}
-	stat = ReadFile(hfile, ccb->data, CACHE_BLOCKSIZE, &bytes_read, NULL);
-	if (!stat)
-		(*hdat->log_msg_fn)("\nError reading file\n");
+	return(read_cache_block(hdat->dbfiles[filenum].fp, (int64_t)blocknum * CACHE_BLOCKSIZE,
+					ccb->data, CACHE_BLOCKSIZE, hdat->log_msg_fn));
 }
 
 
@@ -249,10 +249,12 @@ void read_block_from_file(SLICE32_DATA *hdat, CCB *ccb)
  * Get the least recently used cache
  * block and load it into that.
  * Update the LRU list to make this block the most recently used.
+ * Return NULL if the block cannot be read. In that case the block is not cached.
  */
 CCB *load_blocknum_wht(SLICE32_DATA *hdat, CPRSUBDB *subdb, int blocknum, int cache_blocksize, unsigned int ht_index)
 {
 	CCB *ccbp;
+	unsigned int filenum;
 
 	++hdat->lookup_stats.lru_cache_loads;
 
@@ -264,12 +266,18 @@ CCB *load_blocknum_wht(SLICE32_DATA *hdat, CPRSUBDB *subdb, int blocknum, int ca
 		 * Mark its cache hashtable node as unused.
 		 */
 		hdat->hashtable.remove_node(ccbp->ht_node);
+		ccbp->ht_node = nullptr;
 	}
 
-	hdat->ccbs[hdat->ccbs_top].ht_node = hdat->hashtable.add_node((unsigned int)(subdb->file - &hdat->dbfiles[0]), blocknum, hdat->ccbs_top, ht_index);
+	/* Read this block from disk into ccbs_top's ccb.
+	 * If the read fails, the ccb stays unused at the top of the lru list, so the next load reuses it.
+	 */
+	filenum = (unsigned int)(subdb->file - &hdat->dbfiles[0]);
+	if (!read_block_from_file(hdat, ccbp, filenum, blocknum))
+		return(NULL);
 
-	/* Read this block from disk into ccbs_top's ccb. */
-	read_block_from_file(hdat, hdat->ccbs + hdat->ccbs_top);
+	/* The read succeeded, so now it is safe to map the block to this ccb. */
+	ccbp->ht_node = hdat->hashtable.add_node(filenum, blocknum, hdat->ccbs_top, ht_index);
 
 	assign_subindices(hdat, subdb, ccbp);
 
@@ -303,6 +311,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 	int dbfile_blocknum;
 	int returnvalue;
 	unsigned char *diskblock;
+	unsigned char blockcopy[SUBINDEX_BLOCKSIZE];	/* private copy of a cached subindex block. */
 	INDEX n_idx;
 	INDEX *indices;
 	EGDB_ROW_REVERSED_BITBOARD revpos;
@@ -435,6 +444,12 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 
 			/* If necessary load this block from disk, update lru list. */
 			ccbp = load_blocknum_wht(hdat, dbpointer, dbfile_blocknum, CACHE_BLOCKSIZE, ht_index);
+			if (ccbp == NULL) {
+#if SMP
+				ReleaseSpinLock(hdat->lock);
+#endif
+				return(EGDB_UNKNOWN);
+			}
         }
 
 #else
@@ -474,6 +489,12 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 
 			/* If necessary load this block from disk, update lru list. */
 			ccbp = load_blocknum<CCB>(hdat, dbpointer, dbfile_blocknum, CACHE_BLOCKSIZE);
+			if (ccbp == NULL) {
+#if SMP
+				ReleaseSpinLock(hdat->lock);
+#endif
+				return(EGDB_UNKNOWN);
+			}
 		}
 #endif
 
@@ -508,6 +529,12 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 			i = 0;
 		}
 		diskblock = ccbp->data + subidx_blocknum * SUBINDEX_BLOCKSIZE;
+
+		/* Copy the subindex block while we still hold the lock. After the lock is
+		 * released, another thread can evict this cache block and overwrite its data.
+		 */
+		memcpy(blockcopy, diskblock, SUBINDEX_BLOCKSIZE);
+		diskblock = blockcopy;
 #if SMP
 		ReleaseSpinLock(hdat->lock);
 #endif
@@ -524,7 +551,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 	 */
 	uint8_t catalognum = dbpointer->catalogidx[dbfile_blocknum - dbpointer->first_idx_block];
 	runlength = hdat->decompress.get_runlengths(catalognum);
-	while (n_idx <= index) {
+	while (n_idx <= index && i < SUBINDEX_BLOCKSIZE) {
 		n_idx += runlength[diskblock[i]];
 		i++;
 	}
@@ -534,10 +561,9 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 	 * we overshot again, move back:
 	 */
 	i--;
-	n_idx -= runlength[diskblock[i]];
 
-	/* Do some simple error checking. */
-	if (i < 0 || i >= SUBINDEX_BLOCKSIZE) {
+	/* Do some simple error checking. If n_idx <= index we ran off the end of the subindex block. */
+	if (n_idx <= index || i < 0) {
 		char msg[MAXMSG];
 
 		sprintf(msg, "db block array index outside block bounds: %d\nFile %s\n",
@@ -545,6 +571,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *p, int colo
 		(*hdat->log_msg_fn)(msg);
 		return EGDB_UNKNOWN;
 	}
+	n_idx -= runlength[diskblock[i]];
 
 	/* The target position is in diskblock[i]. */
 	returnvalue = hdat->decompress.decode(index - n_idx, diskblock[i], dbpointer->vmap[dbfile_blocknum - dbpointer->first_idx_block], catalognum);
@@ -682,7 +709,6 @@ static void assign_subindices(SLICE32_DATA *hdat, CPRSUBDB *subdb, CCB *ccbp)
  */
 static void preload_cache_blocks(SLICE32_DATA *hdat)
 {
-	const int max_preload_blocks = 1500000;		/* Don't allow preload to take too long. */
 	int count, maxcount;				/* keep count of cacheblocks that are preloaded. */
 	int t0, t1;
 	char msg[200];
@@ -926,7 +952,13 @@ static int needed_cache_buffers(SLICE32_DATA *hdat)
 				return(-1);
 			}
 
-			read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].file_cache, size, get_page_size());
+			if (!read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].file_cache, size, get_page_size())) {
+				sprintf(msg, "ERROR: autoload read failed for %s, error %lu\n", hdat->dbfiles[i].name, GetLastError());
+				(*hdat->log_msg_fn)(msg);
+				CloseHandle(hdat->dbfiles[i].fp);
+				hdat->dbfiles[i].fp = INVALID_HANDLE_VALUE;
+				return(1);
+			}
 
 			/* Close the db file, we are done with it. */
 			CloseHandle(hdat->dbfiles[i].fp);
@@ -974,13 +1006,21 @@ static int needed_cache_buffers(SLICE32_DATA *hdat)
 	 */
 	int needed = needed_cache_buffers(hdat);
 	if (needed > 0) {
-		if ((allocated_bytes + MIN_CACHE_BUF_BYTES) / ONE_MB >= cache_mb) {
+		int64_t index_bytes = allocated_bytes - autoload_bytes;
+		int64_t min_cache_bytes = std::min(std::max(index_bytes / 4, (int64_t)MIN_CACHE_BUF_BYTES), (int64_t)MAX_MIN_CACHE_BUF_BYTES);
 
-			/* We need more memory than he gave us, allocate 10mb of cache
+		if ((allocated_bytes + min_cache_bytes) / ONE_MB >= cache_mb) {
+
+			/* We need more memory than he gave us, allocate the minimum of cache
 			 * buffers if we can use that many.
 			 */
-			hdat->cacheblocks = std::min(MIN_CACHE_BUF_BYTES / CACHE_BLOCKSIZE, needed);
-			sprintf(msg, "Allocating the minimum %d cache buffers\n", hdat->cacheblocks);
+			hdat->cacheblocks = (int)std::min(min_cache_bytes / CACHE_BLOCKSIZE, (int64_t)needed);
+			sprintf(msg, "WARNING: the memory setting of %smb is too small. Indexing and permanent slice caches use %smb, "
+						"so allocating the minimum %smb of cache buffers, %smb in total.\n",
+						format_with_commas(cache_mb).c_str(),
+						format_with_commas(allocated_bytes / ONE_MB).c_str(),
+						format_with_commas(((int64_t)hdat->cacheblocks * CACHE_BLOCKSIZE) / ONE_MB).c_str(),
+						format_with_commas((allocated_bytes + (int64_t)hdat->cacheblocks * CACHE_BLOCKSIZE) / ONE_MB).c_str());
 			(*hdat->log_msg_fn)(msg);
 		}
 		else {
@@ -1153,12 +1193,14 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (status) {
 		sprintf(msg, "Cannot get size of %s\n", basename);
 		(*hdat->log_msg_fn)(msg);
+		fclose(base_fp);
 		return(1);
 	}
 	Base *basep = (Base *)malloc((size_t)fsize);
 	if (basep == nullptr) {
 		sprintf(msg, "Cannot allocate memory for %s\n", basename);
 		(*hdat->log_msg_fn)(msg);
+		fclose(base_fp);
 		return(1);
 	}
 	*allocated_bytes += fsize;
@@ -1167,6 +1209,8 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (get_nrecords(fsize, sizeof(Base), nsubdbs)) {
 		sprintf(msg, "Fractional record read from %s\n", basename);
 		(*hdat->log_msg_fn)(msg);
+		fclose(base_fp);
+		free(basep);
 		return(1);
 	}
 
@@ -1174,6 +1218,8 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (nread != nsubdbs) {
 		sprintf(msg, "Read %zu records from %s, expected %zu\n", nread, basename, nsubdbs);
 		(*hdat->log_msg_fn)(msg);
+		fclose(base_fp);
+		free(basep);
 		return(1);
 	}
 	fclose(base_fp);
@@ -1182,12 +1228,15 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (fp == 0) {
 		sprintf(msg, "cannot open index file %s\n", name);
 		(*hdat->log_msg_fn)(msg);
+		free(basep);
 		return(1);
 	}
 	status = file_size(name, fsize);
 	if (status) {
 		sprintf(msg, "Cannot get size of %s\n", name);
 		(*hdat->log_msg_fn)(msg);
+		fclose(fp);
+		free(basep);
 		return(1);
 	}
 	size_t indexsize = sizeof(uint32_t);
@@ -1197,6 +1246,8 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (get_nrecords(fsize, indexsize + catsize + vmapsize, num_index_records)) {
 		sprintf(msg, "Fractional record in %s\n", name);
 		(*hdat->log_msg_fn)(msg);
+		fclose(fp);
+		free(basep);
 		return(1);
 	}
 	indices = (uint32_t *)malloc(indexsize * num_index_records);
@@ -1205,6 +1256,11 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (indices == nullptr || catalogidx == nullptr || vmap == nullptr) {
 		sprintf(msg, "Cannot allocate memory for index arrays for %s\n", name);
 		(*hdat->log_msg_fn)(msg);
+		fclose(fp);
+		free(basep);
+		free(indices);
+		free(catalogidx);
+		free(vmap);
 		return(1);
 	}
 	*allocated_bytes += (indexsize + catsize + vmapsize) * num_index_records;
@@ -1213,18 +1269,33 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 	if (nread != num_index_records) {
 		sprintf(msg, "Read %zu records from %s, expected %zu\n", nread, name, num_index_records);
 		(*hdat->log_msg_fn)(msg);
+		fclose(fp);
+		free(basep);
+		free(indices);
+		free(catalogidx);
+		free(vmap);
 		return(1);
 	}
 	nread = fread(catalogidx, catsize, num_index_records, fp);
 	if (nread != num_index_records) {
 		sprintf(msg, "Read %zu records from %s, expected %zu\n", nread, name, num_index_records);
 		(*hdat->log_msg_fn)(msg);
+		fclose(fp);
+		free(basep);
+		free(indices);
+		free(catalogidx);
+		free(vmap);
 		return(1);
 	}
 	nread = fread(vmap, vmapsize, num_index_records, fp);
 	if (nread != num_index_records) {
 		sprintf(msg, "Read %zu records from %s, expected %zu\n", nread, name, num_index_records);
 		(*hdat->log_msg_fn)(msg);
+		fclose(fp);
+		free(basep);
+		free(indices);
+		free(catalogidx);
+		free(vmap);
 		return(1);
 	}
 	fclose(fp);
@@ -1245,6 +1316,7 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 			*allocated_bytes += dbp->num_subslices * sizeof(CPRSUBDB);
 			if (!dbp->subdb) {
 				(*hdat->log_msg_fn)("Cannot allocate subslice subdb\n");
+				free(basep);
 				return(1);
 			}
 			if (f->slices == nullptr)
@@ -1301,8 +1373,13 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 		}
 	}
 
-	if (prev)
+	if (prev) {
 		prev->last_subidx_block = (unsigned char)(((filesize - 1) % IDX_BLOCKSIZE) / SUBINDEX_BLOCKSIZE);
+
+		/* Check for special case of only 1 subidx block. */
+		if (prev->num_idx_blocks == 1 && prev->first_subidx_block == prev->last_subidx_block)
+			prev->single_subidx_block = 1;
+	}
 	
 	free(basep);
 	sprintf(msg, "%13s index blocks: %s\n", format_with_commas(f->num_datablocks).c_str(), name);
@@ -1523,8 +1600,13 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, __int64 *allocated_byte
 	}
 	fclose(fp);
 
-	if (prev)
+	if (prev) {
 		prev->last_subidx_block = (unsigned char)(((filesize - 1) % IDX_BLOCKSIZE) / SUBINDEX_BLOCKSIZE);
+
+		/* Check for special case of only 1 subidx block. */
+		if (prev->num_idx_blocks == 1 && prev->first_subidx_block == prev->last_subidx_block)
+			prev->single_subidx_block = 1;
+	}
 
 	sprintf(msg, "%13s index blocks: %s\n", format_with_commas(f->num_datablocks).c_str(), name);
 	(*hdat->log_msg_fn)(msg);
@@ -1542,6 +1624,7 @@ static void build_file_table(SLICE32_DATA *hdat)
 	DBFILE file;
 
 	memset(&file, 0, sizeof(file));
+	file.fp = INVALID_HANDLE_VALUE;		/* so close after a failed open doesn't close handle 0. */
 	for (slice = Slice(2); slice.npieces() <= hdat->maxpieces; ) {
 		if (slice.npieces() <= hdat->same_pieces_one_file) {
 			sprintf(file.name, "db%d", slice.npieces());
@@ -1641,12 +1724,12 @@ static int egdb_close_slice32(EGDB_DRIVER *handle)
 }
 
 
-static int verify_crc_stem(SLICE32_DATA *hdat, const char *stem, const char *ext, DBCRC *crctbl, int crcsize) 
+static int verify_crc_stem(SLICE32_DATA *hdat, const char *stem, const char *ext, const DBCRC *crctbl, int crcsize) 
 {
 	FILE *fp;
 	char filename[MAXFILENAME];
 	char msg[MAXMSG];
-	DBCRC *pcrc;
+	const DBCRC *pcrc;
 	unsigned int crc;
 
 	sprintf(filename, "%s.%s", stem, ext);
@@ -1689,7 +1772,7 @@ static int verify_crc(EGDB_DRIVER *handle)
 			continue;
 
 #ifdef BINARY_IDX_FILES
-		if (hdat->db_type == EGDB_KINGSROW32_WLD_TUN_12PC) {
+		if (hdat->db_type == EGDB_KINGSROW32_WLD_TUN_BINIDX) {
 			status |= verify_crc_stem(hdat, hdat->dbfiles[i].name, hdat->idx_extension, wld_12pc_crc, ARRAY_SIZE(wld_12pc_crc));
 			status |= verify_crc_stem(hdat, hdat->dbfiles[i].name, hdat->base_extension, wld_12pc_crc, ARRAY_SIZE(wld_12pc_crc));
 			status |= verify_crc_stem(hdat, hdat->dbfiles[i].name, hdat->wld_data_extension, wld_12pc_crc, ARRAY_SIZE(wld_12pc_crc));

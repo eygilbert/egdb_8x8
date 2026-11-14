@@ -104,7 +104,7 @@ struct CAKE_DATA {
 };
 
 /* A table of crc values for each database file. */
-static DBCRC dbcrc[] = {
+static const DBCRC dbcrc[] = {
 	{"db2.cpr", 0xadb68b06},
 	{"db2.idx", 0x06139b08},
 	{"db3.cpr", 0xb51fe30b},
@@ -234,6 +234,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *pos, int co
 	int dbfile_blocknum;
 	int returnvalue;
 	unsigned char *diskblock;
+	uint16_t blockcopy[IDX_BLOCKSIZE / 2];		/* private copy of a cached index block, 16-bit aligned. */
 #if USE_RUNLENGTH16
 	unsigned short *diskblock16;
 #endif
@@ -343,10 +344,22 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *pos, int co
 
 			/* If necessary load this block from disk, update lru list. */
 			ccbp = load_blocknum_v2<CCB>(hdat, dbpointer->file, dbfile_blocknum, CACHE_BLOCKSIZE);
+			if (ccbp == NULL) {
+#if SMP
+				ReleaseSpinLock(hdat->lock);
+#endif
+				return(EGDB_UNKNOWN);
+			}
 		}
 
 		diskblock = ccbp->data + ((dbpointer->first_idx_block + idx_blocknum) %
 						IDX_BLOCKS_PER_CACHE_BLOCK) * IDX_BLOCKSIZE;
+
+		/* Copy the index block while we still hold the lock. After the lock is
+		 * released, another thread can evict this cache block and overwrite its data.
+		 */
+		memcpy(blockcopy, diskblock, IDX_BLOCKSIZE);
+		diskblock = (unsigned char *)blockcopy;
 #if SMP
 		ReleaseSpinLock(hdat->lock);
 #endif
@@ -372,7 +385,7 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *pos, int co
 	diskblock16 = (unsigned short *)diskblock;
 	if (reverse) {
 		n_idx = indices[idx_blocknum + 1];
-		i = rle_compr::find_compr_val_rev(rle_compr::runlength16, diskblock16, IDX_BLOCKSIZE / 2, index, n_idx);
+		i = rle_compr::find_compr_val_rev_checked(rle_compr::runlength16, diskblock16, IDX_BLOCKSIZE / 2, 0, index, n_idx);
 	}
 	else {
 		n_idx = indices[idx_blocknum];
@@ -388,29 +401,29 @@ static int dblookup(EGDB_DRIVER *handle, EGDB_ROW_REVERSED_BITBOARD *pos, int co
 				n_idx += rle_compr::runlength[diskblock[i]];
 			i = (dbpointer->startbyte + 1) / 2;
 		}
-		i = rle_compr::find_compr_val_fwd(rle_compr::runlength16, diskblock16, i, index, n_idx);
+		i = rle_compr::find_compr_val_fwd_checked(rle_compr::runlength16, diskblock16, i, IDX_BLOCKSIZE / 2, index, n_idx);
 
 	}
 
 	/* Change i from a 16-bit index to a byte index. */
 	i *= 2;
 
-	/* Now see if we are 1 byte off. */
-	if (n_idx + rle_compr::runlength[diskblock[i]] <= index) {
+	/* Now see if we are 1 byte off. i is negative if the search ran off the block. */
+	if (i >= 0 && n_idx + rle_compr::runlength[diskblock[i]] <= index) {
 		n_idx += rle_compr::runlength[diskblock[i]];
 		++i;
 	}
 #else
 	if (reverse) {
 		n_idx = indices[idx_blocknum + 1];
-		i = rle_compr::find_compr_val_rev(rle_compr::runlength, diskblock, IDX_BLOCKSIZE, index, n_idx);
+		i = rle_compr::find_compr_val_rev_checked(rle_compr::runlength, diskblock, IDX_BLOCKSIZE, 0, index, n_idx);
 	}
 	else {
 		n_idx = indices[idx_blocknum];
 		i = 0;
 		if (idx_blocknum == 0)
 			i = dbpointer->startbyte;
-		i = rle_compr::find_compr_val_fwd(rle_compr::runlength, diskblock, i, index, n_idx);
+		i = rle_compr::find_compr_val_fwd_checked(rle_compr::runlength, diskblock, i, IDX_BLOCKSIZE, index, n_idx);
 	}
 #endif
 
@@ -574,7 +587,13 @@ static int initdblookup(CAKE_DATA *hdat, int pieces, int cache_mb, const char *f
 				return(-1);
 			}
 
-			read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].file_cache, size, get_page_size());
+			if (!read_file(hdat->dbfiles[i].fp, hdat->dbfiles[i].file_cache, size, get_page_size())) {
+				sprintf(msg, "ERROR: autoload read failed for %s, error %lu\n", hdat->dbfiles[i].name, GetLastError());
+				(*hdat->log_msg_fn)(msg);
+				CloseHandle(hdat->dbfiles[i].fp);
+				hdat->dbfiles[i].fp = INVALID_HANDLE_VALUE;
+				return(1);
+			}
 
 			/* Close the db file, we are done with it. */
 			CloseHandle(hdat->dbfiles[i].fp);
@@ -913,8 +932,10 @@ static int egdb_close_cake(EGDB_DRIVER *handle)
 	int i;
 	CPRSUBDB *p;
 
-	/* Free the cache buffers in groups of CACHE_ALLOC_COUNT at a time. */
-	if (hdat->cacheblocks) {
+	/* Free the cache buffers in groups of CACHE_ALLOC_COUNT at a time.
+	 * After a failed open, ccbs can be null even though cacheblocks is set.
+	 */
+	if (hdat->ccbs) {
 		for (i = 0; i < hdat->cacheblocks; i += CACHE_ALLOC_COUNT) {
 			if (hdat->ccbs[i].data)
 				VirtualFree(hdat->ccbs[i].data, 0, MEM_RELEASE);
@@ -967,7 +988,7 @@ static int verify_crc(EGDB_DRIVER *handle)
 	int i;
 	int status;
 	unsigned int crc;
-	DBCRC *pcrc;
+	const DBCRC *pcrc;
 	FILE *fp;
 	char filename[MAXFILENAME];
 	char msg[MAXMSG];
@@ -999,6 +1020,7 @@ static int verify_crc(EGDB_DRIVER *handle)
 		(*hdat->log_msg_fn)(msg);
 
 		crc = file_crc_calc(fp);
+		fclose(fp);
 		if (crc != pcrc->crc) {
 			sprintf(msg, "file %s failed crc check, expected %08x, got %08x\n",
 				filename, pcrc->crc, crc);
@@ -1006,7 +1028,6 @@ static int verify_crc(EGDB_DRIVER *handle)
 			status = 1;
 			continue;
 		}
-		fclose(fp);
 
 		/* Build the data filename. */
 		sprintf(filename, "%s.cpr", hdat->dbfiles[i].name);
@@ -1030,6 +1051,7 @@ static int verify_crc(EGDB_DRIVER *handle)
 		(*hdat->log_msg_fn)(msg);
 
 		crc = file_crc_calc(fp);
+		fclose(fp);
 		if (crc != pcrc->crc) {
 			sprintf(msg, "file %s failed crc check, expected %08x, got %08x\n",
 				filename, pcrc->crc, crc);
@@ -1037,7 +1059,6 @@ static int verify_crc(EGDB_DRIVER *handle)
 			status = 1;
 			continue;
 		}
-		fclose(fp);
 	}
 	return(status);
 }
