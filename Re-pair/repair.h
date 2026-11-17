@@ -63,6 +63,14 @@ public:
 		std::vector<Rule> symtable;
 	};
 
+	Repair(void) {
+		text_length = 0;
+		seq = nullptr;
+		num_pairs = 0;
+		ht_size = 0;
+		hashtable = nullptr;
+		pq_index = 0;
+	};
 	~Repair(void) {close();};
 	void compress(std::vector<uint8_t> &input, int maxcodes);
 	int verify_compressed(std::vector<uint8_t> &original, std::vector<uint16_t> &compressed);
@@ -111,7 +119,7 @@ private:
 	Symbols symbols;					/* Assigned pairs and input symbols. */
 };
 
-void get_symbol_lengths(std::vector<Repair::Rule> &symbols, std::vector<uint16_t> &lengths);
+void get_symbol_lengths(std::vector<Repair::Rule> &symbols, std::vector<uint32_t> &lengths);
 double calc_entropy(std::vector<uint32_t> &frequencies);
 
 #endif

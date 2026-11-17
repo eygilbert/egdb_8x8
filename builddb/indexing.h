@@ -188,28 +188,37 @@ inline uint32_t bitboard2index_rev(BITBOARD bb, int sq_offset, BITBOARD interfer
 namespace man_index_monotonic {
 
 	/* man_index_base[nbm][nwm][bm index] gives the base checker index for a given
-	 * configuration of nbm, nwm, and bmindex. This table uses 107mb of memory,
-	 * so it's only initialized if an access function is called.
+	 * configuration of nbm, nwm, and bmindex. This table uses 86mb of memory,
+	 * so it's only initialized if an access function is called, or by init().
+	 * The access functions build it on first use without a lock, so a program that uses
+	 * them from several threads must call init() first. The egdb DTW driver does this
+	 * when it opens a database that needs the table.
 	 */
 	extern int64_t *man_index_base[MAXPIECE_INDEXING + 1][MAXPIECE_INDEXING + 1];
 	extern bool did_init;
-	extern void init_man_index_base(void);
+	extern int64_t init_man_index_base(void);
+
+	/* Build the table if it has not been built. Return the number of bytes allocated, 0 if none. */
+	inline int64_t init(void)
+	{
+		int64_t bytes = 0;
+
+		if (!did_init) {
+			bytes = init_man_index_base();
+			did_init = true;
+		}
+		return(bytes);
+	}
 
 	inline int64_t base(int nbm, int nwm, uint32_t bmindex)
 	{
-		if (!did_init) {
-			init_man_index_base();
-			did_init = true;
-		}
+		init();
 		return(man_index_base[nbm][nwm][bmindex]);
 	}
 
 	inline uint32_t find_bmindex(int nbm, int nwm, uint32_t bmrange, int64_t menindex) 
 	{
-		if (!did_init) {
-			init_man_index_base();
-			did_init = true;
-		}
+		init();
 		int64_t *first = man_index_base[nbm][nwm];
 		auto next_blockp = std::upper_bound(first, first + bmrange, menindex);
 		uint32_t bmindex = (uint32_t)(next_blockp - first - 1);

@@ -24,7 +24,27 @@ public:
 
 	~Packed_array()
 	{
-		clear();
+		free(array_);
+	}
+
+	/* The array owns its buffer, so it can be moved but not copied. */
+	Packed_array(const Packed_array &) = delete;
+	Packed_array &operator=(const Packed_array &) = delete;
+
+	Packed_array(Packed_array &&other) noexcept
+	{
+		init(other.nbits_);
+		swap(other);
+	}
+
+	Packed_array &operator=(Packed_array &&other) noexcept
+	{
+		if (this != &other) {
+			free(array_);
+			init(other.nbits_);
+			swap(other);
+		}
+		return(*this);
 	}
 
 	void clear(void)
@@ -108,6 +128,8 @@ public:
 		bytes64 temp;
 		size_t nbytes;
 
+		assert(value <= mask_);
+		value &= (uint32_t)mask_;
 		int bitoffset = (index * (uint64_t)nbits_) & 7;
 		size_t start = (index * (uint64_t)nbits_) / 8;
 		nbytes = (nbits_ + bitoffset + 7) / 8;
@@ -123,12 +145,14 @@ public:
 			std::bad_alloc alloc_error;
 
 			size_t newrawsize;
+			uint8_t *newarray;
 			newrawsize = bytes_needed(newsize);
-			array_ = (uint8_t *)realloc(array_, newrawsize);
-			if (array_ == nullptr) {
+			newarray = (uint8_t *)realloc(array_, newrawsize);
+			if (newarray == nullptr) {
 				throw alloc_error;
 				return;
 			}
+			array_ = newarray;
 
 			/* Clear the new bytes. */
 			memset(&array_[rawsize_], 0, newrawsize - rawsize_);
@@ -178,6 +202,16 @@ public:
 	}
 
 private:
+	void swap(Packed_array &other)
+	{
+		std::swap(nbits_, other.nbits_);
+		std::swap(mask_, other.mask_);
+		std::swap(size_, other.size_);
+		std::swap(rawsize_, other.rawsize_);
+		std::swap(capacity_, other.capacity_);
+		std::swap(array_, other.array_);
+	}
+
 	void init(int nbits) {
 		nbits_ = nbits;
 		mask_ = ((uint64_t)1 << nbits) - 1;

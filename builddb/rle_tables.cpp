@@ -21,6 +21,22 @@ int skip_inc[SKIPS_INC] = {
 	33,34,35,70,106,MAXSKIP_INC
 };
 
+/*
+ * MTC_SKIP_84 should be 80000, to keep the table in increasing order, but the MTC databases were
+ * built with 800000, and it is kept so that a rebuild matches them exactly.
+ * With 800000 the table is out of order, so the binary search in get_mtc_runtok() never chooses
+ * token 84. Runs of 80000 to 89999 are encoded as a 70000 run and the rest, and no existing MTC file
+ * contains token 84, so the existing files decode the same with either value.
+ * Defining MTC_SKIP_FIX_80000 makes the builder use token 84 for runs of 80000 to 89999. The files
+ * it writes then need a driver built with the same define; an older egdb driver would decode token 84
+ * as a run of 800000 and return wrong values.
+ */
+#ifdef MTC_SKIP_FIX_80000
+#define MTC_SKIP_84 80000
+#else
+#define MTC_SKIP_84 800000
+#endif
+
 int mtc_skip[MTC_SKIPS] = {
 /* 0 */		1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 /* 1 */		11, 12, 13, 14, 15, 16, 17, 18, 19, 20,	
@@ -30,7 +46,7 @@ int mtc_skip[MTC_SKIPS] = {
 /* 5 */		100, 150, 200, 250, 300, 350, 400, 450, 500, 550,
 /* 6 */		600, 650, 700, 750, 800, 850, 900, 950, 1000, 2000,	
 /* 7 */		3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000,
-/* 8 */		40000, 50000, 60000, 70000, 800000, 90000, 100000, 300000, 1000000, 3000000, 
+/* 8 */		40000, 50000, 60000, 70000, MTC_SKIP_84, 90000, 100000, 300000, 1000000, 3000000,
 /* 9 */		10000000, 30000000, 100000000, MAX_MTCSKIP
 };
 

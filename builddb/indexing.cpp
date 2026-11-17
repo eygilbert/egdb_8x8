@@ -531,17 +531,19 @@ int64_t getslicesize_gaps(int bm, int bk, int wm, int wk)
 namespace man_index_monotonic {
 
 	/* man_index_base[nbm][nwm][bm index] gives the base checker index for a given
-	 * configuration of nbm, nwm, and bmindex. This table uses 85mb of memory,
-	 * so it's only initialized if a class member function is called.
+	 * configuration of nbm, nwm, and bmindex. This table uses 86mb of memory,
+	 * so it's only initialized if an access function is called, or by init().
 	 */
 	int64_t *man_index_base[MAXPIECE_INDEXING + 1][MAXPIECE_INDEXING + 1];
 	bool did_init;
 
-	void init_man_index_base(void)
+	/* Build the table. Each array is filled before its pointer is stored. Return the bytes allocated. */
+	int64_t init_man_index_base(void)
 	{
 		const bool print = false;
 		int nbm, nwm, nbm_interfering;
 		int64_t base, bmrange, wmrange, index, size;
+		int64_t *table;
 		BITBOARD bmmask;
 
 		size = 0;
@@ -553,10 +555,10 @@ namespace man_index_monotonic {
 				bmrange = choose(NUMSQUARES - ROWSIZE, nbm);
 				if (print)
 					printf("\nsize tble[%d][%d] = %lld entries", nbm, nwm, bmrange);
-				man_index_base[nbm][nwm] = (int64_t *)malloc((size_t)bmrange * sizeof(int64_t));
+				table = (int64_t *)malloc((size_t)bmrange * sizeof(int64_t));
 				size += bmrange * sizeof(int64_t);
 				for (index = 0; index < bmrange; ++index) {
-					man_index_base[nbm][nwm][index] = base;
+					table[index] = base;
 
 					/* Place the black men. */
 					bmmask = index2bitboard((uint32_t)index, NUMSQUARES - ROWSIZE, nbm, 0);
@@ -570,10 +572,12 @@ namespace man_index_monotonic {
 					wmrange = choose(NUMSQUARES - ROWSIZE - nbm_interfering, nwm);
 					base += wmrange;
 				}
+				man_index_base[nbm][nwm] = table;
 			}
 		}
 		if (print)
 			printf("\nman_index_base table size %lld", size);
+		return(size);
 	}
 
 }

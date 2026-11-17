@@ -27,7 +27,7 @@ double calc_entropy(std::vector<uint32_t> &frequencies)
 }
 
 
-static void get_symbol_length(int sym, std::vector<Repair::Rule> &symbols, std::vector<uint16_t> &lengths)
+static void get_symbol_length(int sym, std::vector<Repair::Rule> &symbols, std::vector<uint32_t> &lengths)
 {
 	if (symbols[sym].left == sym)
 		lengths[sym] = 1;
@@ -42,7 +42,11 @@ static void get_symbol_length(int sym, std::vector<Repair::Rule> &symbols, std::
 }
 
 
-void get_symbol_lengths(std::vector<Repair::Rule> &symbols, std::vector<uint16_t> &lengths)
+/*
+ * Get the number of positions each re-pair symbol expands to. The lengths are 32 bits, because
+ * nothing limits how long a symbol can get: a long run of one value becomes symbols of length 2, 4, 8, ...
+ */
+void get_symbol_lengths(std::vector<Repair::Rule> &symbols, std::vector<uint32_t> &lengths)
 {
 	lengths.clear();
 	lengths.resize(symbols.size(), 0);

@@ -73,7 +73,7 @@ struct CPRSUBDB {
 	};
 	~CPRSUBDB() {};
 	std::vector<Repair::Rule> repair_syms;
-	std::vector<uint16_t> repair_lengths;
+	std::vector<uint32_t> repair_lengths;
 	std::vector<Huffcode> huffcodes;
 	std::vector<Huffman::Lengthtable> lengthtable;
 	std::vector<uint32_t> indices;
@@ -928,6 +928,12 @@ static int parseindexfile(SLICE32_DATA *hdat, DBFILE *f, int64_t *allocated_byte
 		if (!dbp->subdb) {
 			dbp->num_subslices = get_num_subslices(nbm, nbk, nwm, nwk, DTW_SUBSLICE_INDICES);
 			dbp->permutation = permutation;
+
+			/* Indexing by black men index uses a large table that would otherwise be built
+			 * during the first lookup, without a lock. Build it now.
+			 */
+			if (permutation & men_index_by_bmindex)
+				*allocated_bytes += man_index_monotonic::init();
 			dbp->subdb = new CPRSUBDB[dbp->num_subslices];
 			*allocated_bytes += dbp->num_subslices * sizeof(CPRSUBDB);
 			if (!dbp->subdb) {
