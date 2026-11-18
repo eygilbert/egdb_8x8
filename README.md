@@ -1,6 +1,8 @@
 # `egdb_8x8`: a driver for English and Italian checkers endgame databases.
 
-`egdb64.dll` is a library to access the Kingsrow English and Italian endgame databases. This repos contains the source code for the library. It also contains an example C program that demonstates how to use it.
+`egdb64.dll` is a library to access the Kingsrow English and Italian endgame databases. This repository contains the source code for the library. It also contains an example C program that demonstrates how to use it.
+
+How the moves-to-conversion (MTC) values are generated, how accurate they are, and why playing by them cannot cycle is described in [mtc.md](mtc.md).
 
 # License
 
